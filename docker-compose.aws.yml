@@ -1,0 +1,221 @@
+version: '3.8'
+
+# Docker Compose for AWS EC2 deployment
+# This file extends the base docker-compose.yml with application services
+# that pull images from ECR
+
+services:
+  # ===== INFRASTRUCTURE (same as local) =====
+
+  postgres-videos:
+    image: postgres:15-alpine
+    container_name: postgres-videos
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_VIDEOS_DB:-videos}
+      POSTGRES_USER: ${POSTGRES_VIDEOS_USER:-video_user}
+      POSTGRES_PASSWORD: ${POSTGRES_VIDEOS_PASSWORD:-video_pass}
+    volumes:
+      - videos-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U video_user -d videos"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  postgres-jobs:
+    image: postgres:15-alpine
+    container_name: postgres-jobs
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_JOBS_DB:-jobs}
+      POSTGRES_USER: ${POSTGRES_JOBS_USER:-job_user}
+      POSTGRES_PASSWORD: ${POSTGRES_JOBS_PASSWORD:-job_pass}
+    volumes:
+      - jobs-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U job_user -d jobs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: always
+
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: always
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0
+    container_name: keycloak
+    ports:
+      - "8081:8080"
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+    command: start-dev
+    depends_on:
+      postgres-videos:
+        condition: service_healthy
+    restart: always
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: mailhog
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    restart: always
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+    restart: always
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: always
+
+  # ===== APPLICATION SERVICES (from ECR) =====
+
+  video-service:
+    image: ${ECR_VIDEO_SERVICE_IMAGE:-fiapx/video-service:latest}
+    container_name: video-service
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # Database
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-videos:5432/videos
+      SPRING_DATASOURCE_USERNAME: video_user
+      SPRING_DATASOURCE_PASSWORD: video_pass
+      # RabbitMQ
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+      # MinIO
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      # Redis
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      # Keycloak
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/fiapx
+    depends_on:
+      postgres-videos:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: always
+
+  processing-service:
+    image: ${ECR_PROCESSING_SERVICE_IMAGE:-fiapx/processing-service:latest}
+    container_name: processing-service
+    ports:
+      - "8083:8083"
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RABBITMQ_PROCESSING_QUEUE: video.processing
+      RABBITMQ_STATUS_QUEUE: video.status
+      RABBITMQ_DLQ: video.processing.dlq
+      RABBITMQ_EXCHANGE: fiapx.video
+      RABBITMQ_PREFETCH: 5
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_USE_SSL: "false"
+      MINIO_UPLOAD_BUCKET: uploads
+      MINIO_ZIP_BUCKET: zips
+      DATABASE_URL: postgresql://job_user:job_pass@postgres-jobs:5432/jobs?sslmode=disable
+      WORKER_COUNT: 3
+      FFMPEG_FPS: 1
+      FFMPEG_FORMAT: png
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+      SMTP_FROM: noreply@fiapx.local
+      NOTIFICATION_TO: admin@fiapx.local
+      METRICS_PORT: 8083
+      LOG_LEVEL: info
+      TEMP_DIR: /tmp/fiapx
+    depends_on:
+      postgres-jobs:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: always
+
+volumes:
+  videos-data:
+  jobs-data:
+  minio-data:
+  rabbitmq-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  default:
+    name: fiapx-network
