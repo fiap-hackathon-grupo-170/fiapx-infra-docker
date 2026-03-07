@@ -3,7 +3,7 @@
 
 Write-Host "Configurando Keycloak via API..." -ForegroundColor Yellow
 
-$KEYCLOAK_URL = "http://localhost:8081"
+$KEYCLOAK_URL = "http://3.220.174.215:8081"
 $ADMIN_USER = "admin"
 $ADMIN_PASS = "admin"
 

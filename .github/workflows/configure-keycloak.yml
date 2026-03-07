@@ -1,0 +1,65 @@
+name: Configure Keycloak
+on:
+  workflow_dispatch:
+
+jobs:
+  configure:
+    name: Configure Keycloak
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Get EC2 instance ID
+        id: ec2
+        run: |
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Name,Values=fiapx-hackathon-170-app" \
+              "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --output text)
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
+      - name: Build SSM parameters file
+        run: |
+          cat > /tmp/ssm-params.json << 'EOF'
+          {
+            "commands": [
+              "KEYCLOAK=http://localhost:8081",
+              "TOKEN=$(curl -sf -X POST $KEYCLOAK/realms/master/protocol/openid-connect/token -d client_id=admin-cli -d username=admin -d password=admin -d grant_type=password | jq -r .access_token)",
+              "echo \"Token: ${TOKEN:0:20}...\"",
+              "curl -sf -X POST $KEYCLOAK/admin/realms -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" -d '{\"realm\":\"fiapx\",\"enabled\":true}' && echo 'Realm fiapx criado' || echo 'Realm ja existe'",
+              "curl -sf -X POST $KEYCLOAK/admin/realms/fiapx/clients -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" -d '{\"clientId\":\"fiapx-client\",\"enabled\":true,\"publicClient\":true,\"directAccessGrantsEnabled\":true,\"standardFlowEnabled\":true,\"redirectUris\":[\"*\"],\"webOrigins\":[\"*\"]}' && echo 'Client fiapx-client criado' || echo 'Client ja existe'",
+              "curl -sf -X POST $KEYCLOAK/admin/realms/fiapx/users -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" -d '{\"username\":\"testuser\",\"email\":\"test@fiapx.com\",\"enabled\":true,\"emailVerified\":true,\"firstName\":\"Test\",\"lastName\":\"User\",\"credentials\":[{\"type\":\"password\",\"value\":\"test123\",\"temporary\":false}]}' && echo 'Usuario testuser criado' || echo 'Usuario ja existe'",
+              "echo 'Keycloak configurado com sucesso!'"
+            ]
+          }
+          EOF
+
+      - name: Configure Keycloak via SSM
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ steps.ec2.outputs.instance_id }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file:///tmp/ssm-params.json \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command ID: $COMMAND_ID"
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}"
+
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --query "StandardOutputContent" \
+            --output text
