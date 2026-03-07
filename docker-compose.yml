@@ -93,7 +93,7 @@ services:
         condition: service_healthy
 
   video-service:
-    image: ghcr.io/fiap-hackathon-grupo-170/fiapx-video-service:latest
+    image: ${ECR_REGISTRY}/fiapx-video-service:latest
     container_name: video-service
     ports:
       - "8082:8082"
@@ -117,7 +117,7 @@ services:
       - default
 
   processing-service:
-    image: ghcr.io/fiap-hackathon-grupo-170/fiapx-processing-service:latest
+    image: ${ECR_REGISTRY}/fiapx-processing-service:latest
     container_name: processing-service
     ports:
       - "8086:8083"
@@ -138,7 +138,7 @@ services:
       - default
 
   frontend:
-    image: ghcr.io/fiap-hackathon-grupo-170/fiapx-frontend:latest
+    image: ${ECR_REGISTRY}/fiapx-frontend:latest
     container_name: frontend
     ports:
       - "8085:80"
