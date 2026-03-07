@@ -27,19 +27,28 @@ jobs:
             --output text)
           echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
 
+      - name: Build SSM parameters file
+        run: |
+          cat > /tmp/ssm-params.json << 'EOF'
+          {
+            "commands": [
+              "KEYCLOAK=http://localhost:8081",
+              "TOKEN=$(curl -sf -X POST $KEYCLOAK/realms/master/protocol/openid-connect/token -d client_id=admin-cli -d username=admin -d password=admin -d grant_type=password | jq -r .access_token)",
+              "echo \"Token: ${TOKEN:0:20}...\"",
+              "curl -sf -X POST $KEYCLOAK/admin/realms -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" -d '{\"realm\":\"fiapx\",\"enabled\":true}' && echo 'Realm fiapx criado' || echo 'Realm ja existe'",
+              "curl -sf -X POST $KEYCLOAK/admin/realms/fiapx/clients -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" -d '{\"clientId\":\"fiapx-client\",\"enabled\":true,\"publicClient\":true,\"directAccessGrantsEnabled\":true,\"standardFlowEnabled\":true,\"redirectUris\":[\"*\"],\"webOrigins\":[\"*\"]}' && echo 'Client fiapx-client criado' || echo 'Client ja existe'",
+              "curl -sf -X POST $KEYCLOAK/admin/realms/fiapx/users -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" -d '{\"username\":\"testuser\",\"email\":\"test@fiapx.com\",\"enabled\":true,\"emailVerified\":true,\"firstName\":\"Test\",\"lastName\":\"User\",\"credentials\":[{\"type\":\"password\",\"value\":\"test123\",\"temporary\":false}]}' && echo 'Usuario testuser criado' || echo 'Usuario ja existe'",
+              "echo 'Keycloak configurado com sucesso!'"
+            ]
+          }
+          EOF
+
       - name: Configure Keycloak via SSM
         run: |
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ steps.ec2.outputs.instance_id }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "TOKEN=$(curl -sf -X POST http://localhost:8081/realms/master/protocol/openid-connect/token -d client_id=admin-cli -d username=admin -d password=admin -d grant_type=password | grep -o \"access_token\\\":\\\"[^\\\"]*\" | cut -d\\\"'\\'' -f3)",
-              "echo \"Token obtido: ${TOKEN:0:20}...\"",
-              "curl -sf -X POST http://localhost:8081/admin/realms -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" -d '"'"'{\"realm\":\"fiapx\",\"enabled\":true}'"'"' && echo \"Realm fiapx criado\" || echo \"Realm ja existe\"",
-              "curl -sf -X POST http://localhost:8081/admin/realms/fiapx/clients -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" -d '"'"'{\"clientId\":\"fiapx-client\",\"enabled\":true,\"publicClient\":true,\"directAccessGrantsEnabled\":true,\"standardFlowEnabled\":true,\"redirectUris\":[\"*\"],\"webOrigins\":[\"*\"]}'"'"' && echo \"Client fiapx-client criado\" || echo \"Client ja existe\"",
-              "curl -sf -X POST http://localhost:8081/admin/realms/fiapx/users -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" -d '"'"'{\"username\":\"testuser\",\"email\":\"test@fiapx.com\",\"enabled\":true,\"emailVerified\":true,\"firstName\":\"Test\",\"lastName\":\"User\",\"credentials\":[{\"type\":\"password\",\"value\":\"test123\",\"temporary\":false}]}'"'"' && echo \"Usuario testuser criado\" || echo \"Usuario ja existe\"",
-              "echo \"Keycloak configurado com sucesso!\""
-            ]' \
+            --parameters file:///tmp/ssm-params.json \
             --query "Command.CommandId" \
             --output text)
 
