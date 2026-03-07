@@ -44,6 +44,7 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_SERVER_URL: "http://localhost:9000"
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
@@ -90,6 +91,60 @@ services:
     depends_on:
       postgres-videos:
         condition: service_healthy
+
+  video-service:
+    image: ghcr.io/fiap-hackathon-grupo-170/fiapx-video-service:latest
+    container_name: video-service
+    ports:
+      - "8082:8082"
+      - "8084:8083"
+    environment:
+      DATABASE_URL: postgresql://video_user:video_pass@postgres-videos:5432/videos?sslmode=disable
+      MINIO_ENDPOINT: minio:9000
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_URL: redis://redis:6379/0
+      MINIO_PUBLIC_URL: http://localhost:9000
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: fiapx
+    depends_on:
+      postgres-videos:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - default
+
+  processing-service:
+    image: ghcr.io/fiap-hackathon-grupo-170/fiapx-processing-service:latest
+    container_name: processing-service
+    ports:
+      - "8086:8083"
+    environment:
+      DATABASE_URL: postgresql://job_user:job_pass@postgres-jobs:5432/jobs?sslmode=disable
+      MINIO_ENDPOINT: minio:9000
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+    depends_on:
+      postgres-jobs:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - default
+
+  frontend:
+    image: ghcr.io/fiap-hackathon-grupo-170/fiapx-frontend:latest
+    container_name: frontend
+    ports:
+      - "8085:80"
+    depends_on:
+      - video-service
+      - keycloak
 
   mailhog:
     image: mailhog/mailhog:latest
